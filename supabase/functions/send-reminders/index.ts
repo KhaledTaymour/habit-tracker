@@ -1,0 +1,128 @@
+// Sends the reminders that are due this minute. Called by pg_cron every minute
+// (DESIGN.md §10.5), and by the app with {test:true} to prove the chain works.
+//
+// All the "who is due" thinking is in SQL (habits_due_now). This file only
+// encrypts and delivers.
+
+import { createClient } from 'jsr:@supabase/supabase-js@2'
+import webpush from 'npm:web-push@3.6.7'
+
+interface DueRow {
+  habit_id: string
+  user_id: string
+  name: string
+  emoji: string
+  pending: number
+  endpoint: string
+  p256dh: string
+  auth: string
+}
+
+const env = (key: string): string => {
+  const value = Deno.env.get(key)
+  if (!value) throw new Error(`Missing secret: ${key}`)
+  return value
+}
+
+webpush.setVapidDetails(
+  env('VAPID_SUBJECT'), // e.g. mailto:you@example.com
+  env('VAPID_PUBLIC_KEY'),
+  env('VAPID_PRIVATE_KEY'),
+)
+
+// Service role: this function must read every user's due habits, which no
+// user-scoped token can do. It is never exposed to the browser.
+const db = createClient(env('SUPABASE_URL'), env('SUPABASE_SERVICE_ROLE_KEY'))
+
+async function deliver(row: DueRow, title: string, body: string): Promise<'sent' | 'gone' | 'failed'> {
+  try {
+    await webpush.sendNotification(
+      { endpoint: row.endpoint, keys: { p256dh: row.p256dh, auth: row.auth } },
+      JSON.stringify({ title, body, badge: row.pending, url: '/' }),
+      { TTL: 60 * 30 }, // a reminder is worthless an hour late
+    )
+    return 'sent'
+  } catch (error) {
+    const status = (error as { statusCode?: number }).statusCode
+    // 404/410 mean the app was uninstalled or the endpoint rotated. These never
+    // recover — leaving them makes every future run slower and noisier.
+    if (status === 404 || status === 410) {
+      await db.from('push_subscriptions').delete().eq('endpoint', row.endpoint)
+      return 'gone'
+    }
+    console.error('push failed', status, (error as Error).message)
+    return 'failed'
+  }
+}
+
+Deno.serve(async (req) => {
+  let isTest = false
+  try {
+    const body = await req.json()
+    isTest = body?.test === true
+  } catch {
+    // pg_cron posts '{}'; a missing body is normal.
+  }
+
+  // --- test path: prove delivery for the caller only ---
+  if (isTest) {
+    const token = req.headers.get('Authorization')?.replace('Bearer ', '') ?? ''
+    const { data: userData } = await createClient(
+      env('SUPABASE_URL'),
+      env('SUPABASE_ANON_KEY'),
+      { global: { headers: { Authorization: `Bearer ${token}` } } },
+    ).auth.getUser()
+
+    const userId = userData.user?.id
+    if (!userId) return Response.json({ error: 'not signed in' }, { status: 401 })
+
+    const { data: subs } = await db
+      .from('push_subscriptions')
+      .select('endpoint, p256dh, auth')
+      .eq('user_id', userId)
+
+    if (!subs?.length) return Response.json({ error: 'no devices subscribed' }, { status: 400 })
+
+    const results = await Promise.all(
+      subs.map((s) =>
+        deliver(
+          { ...s, habit_id: '', user_id: userId, name: '', emoji: '', pending: 0 } as DueRow,
+          'Habit Tracker',
+          'Test push — reminders are working.',
+        ),
+      ),
+    )
+    return Response.json({ test: true, devices: results.length, results })
+  }
+
+  // --- normal path: whoever is due this minute ---
+  const { data: due, error } = await db.rpc('habits_due_now')
+  if (error) return Response.json({ error: error.message }, { status: 500 })
+
+  const rows = (due ?? []) as DueRow[]
+  if (rows.length === 0) return Response.json({ sent: 0 })
+
+  const results = await Promise.all(
+    rows.map((row) =>
+      deliver(row, `${row.emoji} ${row.name}`, timeToActWord(row.pending)),
+    ),
+  )
+
+  // Mark habits notified even when a device was gone: the gate is per habit, and
+  // retrying every minute for a dead endpoint helps nobody.
+  const notified = [...new Set(rows.map((r) => r.habit_id))]
+  const { error: markError } = await db.rpc('mark_notified', { ids: notified })
+  if (markError) console.error('mark_notified failed', markError.message)
+
+  return Response.json({
+    sent: results.filter((r) => r === 'sent').length,
+    gone: results.filter((r) => r === 'gone').length,
+    failed: results.filter((r) => r === 'failed').length,
+    habits: notified.length,
+  })
+})
+
+function timeToActWord(pending: number): string {
+  if (pending <= 1) return 'Time to do it.'
+  return `Time to do it — ${pending} left today.`
+}
