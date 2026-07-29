@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { enablePush, isIos, pushState, sendTestPush, type PushState } from '@/lib/push'
 
 /**
@@ -7,9 +7,15 @@ import { enablePush, isIos, pushState, sendTestPush, type PushState } from '@/li
  * say which one you're in, and offer a test push to prove it.
  */
 export function NotificationSetup() {
-  const [state, setState] = useState<PushState>(pushState)
+  const [state, setState] = useState<PushState | 'checking'>('checking')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+
+  // Re-checks on every load, and re-saves the endpoint if the browser dropped it.
+  // Cheap, and the alternative is trusting a claim we cannot verify.
+  useEffect(() => {
+    void pushState().then(setState)
+  }, [])
 
   async function turnOn() {
     setBusy(true)
@@ -35,6 +41,8 @@ export function NotificationSetup() {
       setBusy(false)
     }
   }
+
+  if (state === 'checking') return null
 
   if (state === 'ready') {
     return (
@@ -91,6 +99,24 @@ export function NotificationSetup() {
             The browser is refusing, so we cannot ask again from here. Allow notifications
             for this site in your browser or OS settings, then reload.
           </p>
+        </>
+      )}
+
+      {state === 'error' && (
+        <>
+          <p className="font-semibold text-amber-200">Reminders are not registered</p>
+          <p className="mt-1 text-amber-100/80">
+            You allowed notifications, but this device could not be saved as a delivery
+            address, so nothing would arrive. Usually a connection problem.
+          </p>
+          <button
+            type="button"
+            onClick={() => void turnOn()}
+            disabled={busy}
+            className="mt-3 rounded-full bg-amber-400 px-5 py-2.5 font-semibold text-amber-950 disabled:opacity-50 [@media(pointer:coarse)]:py-3"
+          >
+            {busy ? 'Retrying…' : 'Try again'}
+          </button>
         </>
       )}
 

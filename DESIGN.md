@@ -94,14 +94,34 @@ sequenceDiagram
 "Due right now" means all four are true:
 
 ```
-  ┌─ active                                    habit not paused
-  ├─ today matches the schedule                daily / Mon,Wed / weekly
-  ├─ remind_at == now, in the habit's timezone  07:00 in Asia/Riyadh
+  ┌─ active                                     habit not paused
+  ├─ today matches the schedule                 daily / Mon,Wed / weekly
+  ├─ local time is in [remind_at, +30 min)      07:00–07:30 in Asia/Riyadh
   └─ not already notified today                 last_notified_on <> today
 ```
 
 That last line is the one that stops duplicate pings. Cron runs 1440 times a day; the
 flag is what makes 1439 of those runs do nothing.
+
+**Why a window and not an exact minute.** The first version matched the minute exactly.
+That meant one late or skipped cron run lost the reminder for the entire day, silently —
+the worst possible failure for the only feature that matters. A window fires on the
+first sweep at or after the chosen time:
+
+```
+  exact match          07:00 ──┐
+                               └─ cron ran at 07:01 → nothing, all day
+
+  window               07:00 ──┬──────────────── 07:30
+                               └─ cron ran at 07:01 → sent, 1 min late
+```
+
+A reminder four minutes late is useful. One that never arrives is not.
+
+The comparison is done in **seconds since midnight**, not `remind_at + interval
+'30 minutes'`, because time arithmetic wraps: `23:50 + 30min` is `00:20`, which makes a
+range read backwards and match nothing. Seconds can't wrap — and a habit set near
+midnight just gets a shorter window instead of a broken one.
 
 ## 4. Data
 
@@ -430,30 +450,49 @@ Each arrow is a place users fall out. The dead end is the one worth knowing abou
 ```mermaid
 stateDiagram-v2
     [*] --> InTab
-    InTab --> InstallNeeded : iOS
+    InTab --> NeedsInstall : iOS, not installed
     InTab --> CanAsk : Android / desktop
-    InstallNeeded --> CanAsk : added to Home Screen
-    InstallNeeded --> Silent : stayed in Safari
+    NeedsInstall --> CanAsk : added to Home Screen
+    NeedsInstall --> Silent : stayed in Safari
 
     CanAsk --> Granted : tapped Allow
-    CanAsk --> Denied : tapped Block
-    Granted --> Subscribed : endpoint saved to DB
-    Subscribed --> Working : first push arrives
-    Denied --> Silent
+    CanAsk --> Blocked : tapped Block
+    Blocked --> Silent
 
-    Silent --> [*] : no reminders, no error
-    Working --> [*]
+    Granted --> Ready : endpoint saved to DB
+    Granted --> Error : save failed
+    Error --> Granted : retry, or next app open
+    Ready --> Granted : browser dropped the subscription
+
+    Ready --> [*] : pushes arrive
+    Silent --> [*] : nothing arrives, no error
 
     note left of Silent
         the dangerous state:
         everything looks fine,
         nothing is delivered
     end note
+    note right of Ready
+        Ready means an endpoint
+        is stored. NOT merely
+        "permission granted."
+    end note
 ```
 
-Because `Silent` looks identical to working, the UI must **say** which state you are
-in, and offer a "send me a test push" button. Otherwise the first time you learn it's
-broken is the day you needed the reminder.
+**This diagram cost a real bug.** The first implementation returned `Ready` as soon as
+permission was granted — collapsing `Granted` and `Ready` into one state. The app then
+showed "Reminders on", hid the button that was the only thing which ever saved an
+endpoint, and delivered nothing. Permission granted, no address to deliver to, no error
+anywhere. Exactly the `Silent` box, reached through the front door.
+
+Two rules came out of it:
+
+- `Ready` is **only** reachable by storing an endpoint. Permission is a step on the way, never the destination.
+- `Ready → Granted` is a real edge, not a mistake. Browsers drop push subscriptions on their own, so the check re-runs on every app open and re-saves if needed. The state repairs itself instead of quietly rotting.
+
+`Error` exists for the same reason: it's the one failure that otherwise looks exactly
+like success, so it gets a name, a message, and a retry button. And because even a
+correct state machine can't prove delivery, `Ready` still offers "send me a test push".
 
 ### 10.5 Activity — what the clock does every minute
 
@@ -465,7 +504,7 @@ flowchart TD
     C -- yes --> D[for each habit]
     D --> E{today in<br/>schedule?}
     E -- no --> D
-    E -- yes --> F{now == remind_at<br/>in habit's tz?}
+    E -- yes --> F{local time within<br/>30 min after remind_at?}
     F -- no --> D
     F -- yes --> G{already notified<br/>today?}
     G -- yes --> D
@@ -610,7 +649,8 @@ habit-tracker/
 └── supabase/
     ├── migrations/
     │   ├── 0001_init.sql        3 tables, CHECK constraints, RLS
-    │   └── 0002_reminders.sql   habits_due_now(), mark_notified(), the cron job
+    │   ├── 0002_reminders.sql   habits_due_now(), mark_notified(), the cron job
+    │   └── 0003_reminder_window.sql  exact minute → 30-min window (§3)
     └── functions/send-reminders/
         └── index.ts             encrypt + deliver; prunes dead endpoints
 ```
@@ -623,5 +663,7 @@ habit-tracker/
 | Schedule must name a day | `CHECK` constraint in `0001_init.sql` |
 | One tick per habit per day | `UNIQUE (habit_id, done_on)` |
 | Don't send twice in a day | `last_notified_on` gate in `habits_due_now()` |
+| A late cron run still delivers | 30-min window in `0003_reminder_window.sql` |
+| "Reminders on" can't be a lie | `pushState()` returns `ready` only with a stored endpoint |
 | Impossible UI states | union types, not booleans (§10.6) |
 | No width breakpoints | `fluid-shared/scripts/scan.mjs`, clean |

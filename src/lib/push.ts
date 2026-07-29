@@ -8,6 +8,10 @@ export type PushState =
   | 'can-ask'
   | 'blocked'
   | 'ready'
+  /** Permission is granted but the endpoint could not be stored, so nothing will
+   *  arrive. Its own state because it is the one failure that otherwise looks
+   *  identical to success. */
+  | 'error'
 
 export function isStandalone(): boolean {
   return (
@@ -25,15 +29,35 @@ export function isIos(): boolean {
   )
 }
 
-export function pushState(): PushState {
+/** The checks that need no network. Never returns 'ready' — granted permission is
+ *  not the same as "will receive", and conflating the two is how you ship silence. */
+function localState(): PushState | 'granted' {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
     return isIos() && !isStandalone() ? 'needs-install' : 'unsupported'
   }
   // Safari exposes PushManager in tabs but never delivers; installing is the fix.
   if (isIos() && !isStandalone()) return 'needs-install'
   if (Notification.permission === 'denied') return 'blocked'
-  if (Notification.permission === 'granted') return 'ready'
+  if (Notification.permission === 'granted') return 'granted'
   return 'can-ask'
+}
+
+/**
+ * 'ready' means one thing only: this device's endpoint is in the database, so the
+ * server has somewhere to deliver to.
+ *
+ * When permission is already granted but the endpoint is missing, this repairs it
+ * rather than reporting a state the user cannot act on. Browsers drop push
+ * subscriptions on their own, so the repair is not just for first run.
+ */
+export async function pushState(): Promise<PushState> {
+  const local = localState()
+  if (local !== 'granted') return local
+  try {
+    return await subscribeAndSave()
+  } catch {
+    return 'error'
+  }
 }
 
 /** The VAPID key ships as URL-safe base64; subscribe() wants raw bytes.
@@ -52,17 +76,11 @@ function vapidKey(): Uint8Array<ArrayBuffer> {
 }
 
 /**
- * Ask for permission, subscribe this device, store the endpoint.
- * Must be called from a real user gesture — browsers ignore permission
- * requests that aren't.
+ * Subscribe this device and store its endpoint. Assumes permission is already
+ * granted. Idempotent — safe to call on every load, which is what makes a dropped
+ * subscription self-repairing.
  */
-export async function enablePush(): Promise<PushState> {
-  const state = pushState()
-  if (state === 'unsupported' || state === 'needs-install' || state === 'blocked') return state
-
-  const permission = await Notification.requestPermission()
-  if (permission !== 'granted') return permission === 'denied' ? 'blocked' : 'can-ask'
-
+async function subscribeAndSave(): Promise<'ready'> {
   const registration = await navigator.serviceWorker.ready
   const existing = await registration.pushManager.getSubscription()
   const subscription =
@@ -76,7 +94,7 @@ export async function enablePush(): Promise<PushState> {
   const { data: user } = await supabase.auth.getUser()
   if (!user.user) throw new Error('Not signed in')
 
-  // Upsert on endpoint: re-enabling on the same device must not pile up rows.
+  // Upsert on endpoint: re-running this must not pile up duplicate rows.
   const { error } = await supabase.from('push_subscriptions').upsert(
     {
       user_id: user.user.id,
@@ -89,6 +107,21 @@ export async function enablePush(): Promise<PushState> {
   if (error) throw error
 
   return 'ready'
+}
+
+/**
+ * Ask for permission, then subscribe and store.
+ * Must be called from a real user gesture — browsers ignore permission requests
+ * that aren't.
+ */
+export async function enablePush(): Promise<PushState> {
+  const local = localState()
+  if (local === 'unsupported' || local === 'needs-install' || local === 'blocked') return local
+
+  const permission = await Notification.requestPermission()
+  if (permission !== 'granted') return permission === 'denied' ? 'blocked' : 'can-ask'
+
+  return subscribeAndSave()
 }
 
 /** Proves the whole chain works end to end. Without this, 'ready' and 'silently
