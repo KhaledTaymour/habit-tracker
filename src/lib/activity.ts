@@ -20,9 +20,9 @@ function level(due: number, done: number): 0 | 1 | 2 | 3 {
 /**
  * One cell per day, oldest first, ending today.
  *
- * ponytail: past days are scored against each habit's *current* schedule, because
- * we don't store schedule history. Change a habit from daily to Mondays and its
- * older cells re-score. Storing history would mean a versioned schedule table —
+ * Known limitation: past days are scored against each habit's *current* schedule,
+ * because we don't store schedule history. Change a habit from daily to Mondays and
+ * its older cells re-score. Storing history would mean a versioned schedule table —
  * not worth it until someone actually complains.
  */
 export function activityDays(

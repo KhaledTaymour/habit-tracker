@@ -28,7 +28,7 @@ export function TodayScreen() {
   // on your phone still looks untouched on your laptop — and the badge keeps
   // yesterday's number across midnight (§5).
   //
-  // ponytail: a focus refresh, not a Realtime subscription. It costs two listeners
+  // Deliberately a focus refresh, not a Realtime subscription. It costs two listeners
   // and fixes the case that actually happens — you pick up the other device. Live
   // sync while both screens are open is the rarer case; add Realtime if it bites.
   useEffect(() => {

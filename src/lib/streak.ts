@@ -41,7 +41,7 @@ export function streakOf(
   }
   cursor = addDays(cursor, -1)
 
-  // ponytail: 365-day lookback cap. Longer streaks display as 365; raise it if
+  // Known ceiling: 365-day lookback. Longer streaks display as 365; raise it if
   // anyone ever gets there.
   for (let i = 0; i < 365; i++) {
     if (isDueOn(habit, cursor)) {
