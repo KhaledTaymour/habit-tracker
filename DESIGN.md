@@ -745,6 +745,9 @@ reported success while delivering nothing.
 | 6 | Nothing on screen, macOS | OS-level notification permission for the browser was off | System Settings, not code |
 | 7 | Arrived, but only in Notification Centre | OS alert style was "None" | System Settings → Banners or Alerts |
 | 8 | Google login redirected to `localhost` from the phone | Supabase discards a non-allowlisted `redirectTo` and silently falls back to Site URL | add the deployed origin to the allowlist |
+| 9 | OS-level: nothing on screen, then arriving only in Notification Centre | browser permission is not OS permission, and alert style `None` files them away unseen | System Settings, not code (§2) |
+| 10 | Editing a reminder's time forfeited the rest of the day | the habit had already fired once that day; `last_notified_on` stayed set, so the new time hit the "already sent" gate | `BEFORE UPDATE` trigger clears the flag on any schedule change |
+| 11 | One failed send burned the whole day | `mark_notified()` ran unconditionally, even when every device failed | mark only when a device was actually reached; `gone` counts, `failed` retries |
 
 ### What this pattern says
 
@@ -764,8 +767,40 @@ Three habits came out of it, and they're worth more than the fixes:
 2. **A state may not claim more than it has checked.** "Permission granted" is not "will receive". "Accepted by FCM" is not "the user saw it". Each conflation cost a round.
 3. **The last mile is the OS, and it is silent.** Half of these were settings, not code. A "send me a test" button is not a nicety — it is the only instrument that reaches past the code.
 
+### How #10 was actually found
+
+Worth recording, because the debugging was worse than the bug.
+
+The symptom was "test push works, scheduled reminder doesn't". Three rounds were spent
+reasoning from the code — the vault `service_role_key` returning 401, then the gates
+being wrong, then the timezone. **All three were wrong.** Cron was returning 200 every
+minute the entire time.
+
+What settled it in one line was an instrument, not an inference: a `diagnose` mode that
+evaluates all four gates per habit and returns what the sweep actually replied.
+
+```
+  http_events: [{"sent":1,"gone":0,"failed":0,"habits":1}  at 09:45 UTC]
+```
+
+One row. The scheduled path had **already worked** at 12:45 local, delivered
+successfully, and gone unseen because the OS alert style was still `None` (#9). The
+habit's time was then edited, and #10 blocked every later attempt.
+
+Two further lessons, both about the instrument rather than the code:
+
+1. **Build the instrument on the second round, not the fourth.** The gates live in SQL, where a rejected gate and an idle minute look identical. That was knowable in advance.
+2. **The first version of the instrument would have hidden the answer.** It filtered `net._http_response` on the sent count — but a run where every device fails replies `{"sent":0,"gone":0,"failed":2,"habits":1}`, which contains `"sent":0`. Filtering on `"habits"` was the fix. A diagnostic can have the same silent-failure bug as the thing it diagnoses.
+
+### Verified end to end
+
+On macOS and an installed iPhone 13: sign-in on the deployed origin, install, permission,
+subscribe, test push, **and a scheduled reminder arriving unprompted on the iPhone lock
+screen** — body *"Time to do it — 2 left today"*, where the count came from the `pending`
+subquery in `habits_due_now()`. Payload, SQL, and app all agree.
+
 ### Still unverified
 
-- **A scheduled reminder firing on its own.** The test button skips `habits_due_now()` entirely, so the four gates and the timezone maths have never run for real. This is the one gap that matters.
-- **Timezone correctness across devices.** `tz` is stamped from whichever browser last saved the habit (§4).
-- **Free-tier pause.** A Supabase project idle ~7 days stops sending, silently — the ninth entry in the table above, waiting to happen.
+- **The free-tier pause.** A Supabase project idle ~7 days stops sending, silently. Entry 12 in the table above, waiting to happen.
+- **Timezone correctness when travelling.** `tz` is stamped from whichever browser last saved the habit (§4).
+- **Whether both devices received the scheduled push.** Confirmed on the iPhone; the Mac was not checked.

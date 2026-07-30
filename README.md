@@ -9,13 +9,16 @@ Design and diagrams: **[DESIGN.md](DESIGN.md)** · Screens: **[docs/screens.draw
 
 ```
   ✓  Google sign-in, deployed origin      ✓  push permission + subscribe on iOS
-  ✓  test push delivered to both devices  ✓  badge, streaks, activity grid
-  ✗  a scheduled reminder firing on its own   ← the one gap that matters
+  ✓  test push, both devices              ✓  badge, streaks, activity grid
+  ✓  a scheduled reminder firing on its own, to an iPhone lock screen
 ```
 
-The test button skips `habits_due_now()`, so the four gates and the timezone maths have
-never run for real. What broke on the way here, and why every failure looked like
-success: [DESIGN.md §12](DESIGN.md#12-what-actually-broke).
+The scheduled run is the one that proves the rest: cron → the four SQL gates →
+timezone maths → VAPID → APNs → service worker. Its body read *"Time to do it — 2 left
+today"*, and that count comes from SQL, so the payload and the app agree.
+
+What broke on the way here, and why every failure looked like success:
+[DESIGN.md §12](DESIGN.md#12-what-actually-broke).
 
 ---
 
