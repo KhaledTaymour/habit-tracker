@@ -144,17 +144,39 @@ Deno.serve(async (req) => {
     ),
   )
 
-  // Mark habits notified even when a device was gone: the gate is per habit, and
-  // retrying every minute for a dead endpoint helps nobody.
-  const notified = [...new Set(rows.map((r) => r.habit_id))]
-  const { error: markError } = await db.rpc('mark_notified', { ids: notified })
-  if (markError) console.error('mark_notified failed', markError.message)
+  // Group outcomes per habit: rows are (habit x device) pairs.
+  const outcomes = new Map<string, Array<'sent' | 'gone' | 'failed'>>()
+  rows.forEach((row, i) => {
+    const list = outcomes.get(row.habit_id) ?? []
+    const result = results[i]
+    if (result) list.push(result)
+    outcomes.set(row.habit_id, list)
+  })
+
+  // Only mark a habit done-for-today if at least one device was actually reached.
+  // 'gone' counts as reached — the endpoint is permanently dead, so retrying every
+  // minute helps nobody. 'failed' is transient, and marking it would burn the whole
+  // day on one bad send: the habit would be locked out until tomorrow with no
+  // reminder ever shown.
+  const reached: string[] = []
+  const retrying: string[] = []
+  for (const [habitId, list] of outcomes) {
+    if (list.some((r) => r !== 'failed')) reached.push(habitId)
+    else retrying.push(habitId)
+  }
+
+  if (reached.length > 0) {
+    const { error: markError } = await db.rpc('mark_notified', { ids: reached })
+    if (markError) console.error('mark_notified failed', markError.message)
+  }
 
   return json({
     sent: results.filter((r) => r === 'sent').length,
     gone: results.filter((r) => r === 'gone').length,
     failed: results.filter((r) => r === 'failed').length,
-    habits: notified.length,
+    habits: reached.length,
+    // Named in the response so a stuck habit is visible, not inferred.
+    retrying: retrying.length,
   })
 })
 
