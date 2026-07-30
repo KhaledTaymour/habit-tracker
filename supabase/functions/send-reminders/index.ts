@@ -24,6 +24,19 @@ const env = (key: string): string => {
   return value
 }
 
+// The browser sends Authorization + Content-Type, which makes it fire an OPTIONS
+// preflight before the POST. Without an answer to that, the real request never
+// leaves the browser — and curl never shows the problem, because curl doesn't
+// preflight.
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+}
+
+const json = (body: unknown, status = 200) =>
+  Response.json(body, { status, headers: CORS })
+
 webpush.setVapidDetails(
   env('VAPID_SUBJECT'), // e.g. mailto:you@example.com
   env('VAPID_PUBLIC_KEY'),
@@ -56,6 +69,8 @@ async function deliver(row: DueRow, title: string, body: string): Promise<'sent'
 }
 
 Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
+
   let isTest = false
   try {
     const body = await req.json()
@@ -74,14 +89,14 @@ Deno.serve(async (req) => {
     ).auth.getUser()
 
     const userId = userData.user?.id
-    if (!userId) return Response.json({ error: 'not signed in' }, { status: 401 })
+    if (!userId) return json({ error: 'not signed in' }, 401)
 
     const { data: subs } = await db
       .from('push_subscriptions')
       .select('endpoint, p256dh, auth')
       .eq('user_id', userId)
 
-    if (!subs?.length) return Response.json({ error: 'no devices subscribed' }, { status: 400 })
+    if (!subs?.length) return json({ error: 'no devices subscribed' }, 400)
 
     const results = await Promise.all(
       subs.map((s) =>
@@ -92,15 +107,15 @@ Deno.serve(async (req) => {
         ),
       ),
     )
-    return Response.json({ test: true, devices: results.length, results })
+    return json({ test: true, devices: results.length, results })
   }
 
   // --- normal path: whoever is due this minute ---
   const { data: due, error } = await db.rpc('habits_due_now')
-  if (error) return Response.json({ error: error.message }, { status: 500 })
+  if (error) return json({ error: error.message }, 500)
 
   const rows = (due ?? []) as DueRow[]
-  if (rows.length === 0) return Response.json({ sent: 0 })
+  if (rows.length === 0) return json({ sent: 0 })
 
   const results = await Promise.all(
     rows.map((row) =>
@@ -114,7 +129,7 @@ Deno.serve(async (req) => {
   const { error: markError } = await db.rpc('mark_notified', { ids: notified })
   if (markError) console.error('mark_notified failed', markError.message)
 
-  return Response.json({
+  return json({
     sent: results.filter((r) => r === 'sent').length,
     gone: results.filter((r) => r === 'gone').length,
     failed: results.filter((r) => r === 'failed').length,
