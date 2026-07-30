@@ -5,6 +5,18 @@ off. It counts your streak.
 
 Design and diagrams: **[DESIGN.md](DESIGN.md)** · Screens: **[docs/screens.drawio](docs/screens.drawio)**
 
+**Status** — verified end to end on macOS and an installed iPhone 13:
+
+```
+  ✓  Google sign-in, deployed origin      ✓  push permission + subscribe on iOS
+  ✓  test push delivered to both devices  ✓  badge, streaks, activity grid
+  ✗  a scheduled reminder firing on its own   ← the one gap that matters
+```
+
+The test button skips `habits_due_now()`, so the four gates and the timezone maths have
+never run for real. What broke on the way here, and why every failure looked like
+success: [DESIGN.md §12](DESIGN.md#12-what-actually-broke).
+
 ---
 
 ## The one surprising thing
@@ -64,15 +76,19 @@ Nothing here is a server you keep alive.
 
 ## Setup
 
-Six steps. Steps 3 and 5 are the ones people skip and then wonder why nothing arrives.
+Eight steps. **3, 5 and 7 are the ones that fail silently** — skip any of them and
+everything looks fine while nothing is delivered.
 
 ```mermaid
 flowchart TD
     A["1 · create Supabase project"] --> B["2 · turn on Google login"]
-    B --> C["3 · run the two migrations"]
+    B --> C["3 · run the migrations"]
     C --> D["4 · make VAPID keys"]
-    D --> E["5 · store secrets + deploy the function"]
-    E --> F["6 · pnpm dev"]
+    D --> E["5 · secrets + vault + deploy function"]
+    E --> F["6 · pnpm dev, locally"]
+    F --> G["7 · set Site URL + redirect allowlist"]
+    G --> H["8 · pnpm run deploy"]
+    H --> I["9 · install on your phone"]
 ```
 
 **1 · Project** — [supabase.com](https://supabase.com) → New project. Copy the URL and
@@ -86,7 +102,7 @@ under Authentication → URL Configuration.
 
 ```bash
 supabase link --project-ref <your-ref>
-supabase db push          # runs supabase/migrations/*.sql
+supabase db push          # runs all of supabase/migrations/*.sql
 ```
 
 **4 · VAPID keys** — the identity your pushes are signed with.
@@ -126,26 +142,73 @@ pnpm dev
 > The private VAPID key and the service-role key are **function secrets**. Never give
 > them a `VITE_` prefix — anything `VITE_` is compiled into the bundle and is public.
 
+**7 · URL configuration** — Authentication → URL Configuration. Miss this and Google
+sign-in silently redirects to whatever Site URL says, which is how a phone ends up on
+`localhost`:
+
+```
+  Site URL:        https://<your-project>.pages.dev     ← production; it is the fallback
+  Redirect URLs:   https://<your-project>.pages.dev
+                   http://localhost:5173               ← keep, or local dev breaks the same way
+```
+
+Supabase **discards** a `redirectTo` that isn't on this list and falls back to Site URL,
+with no error. That's deliberate: honouring any URL would let an attacker redirect your
+session token.
+
+Do this in the dashboard. Do **not** run `supabase config push` — `config.toml` has no
+`[auth.external.google]` block, so pushing it would disable Google sign-in.
+
+**8 · Deploy**
+
+```bash
+npx wrangler login        # once, in a real terminal — it needs a browser
+pnpm run deploy           # build + publish to Cloudflare Pages
+```
+
+`pnpm run deploy`, with `run`. Bare `pnpm deploy` is a built-in pnpm command for
+workspace packages and does something else entirely.
+
+**9 · Install on your phone** — the order is a requirement, not a suggestion:
+
+```
+  1  open the deployed URL in Safari
+  2  Share → Add to Home Screen
+  3  open it from the ICON, not Safari
+  4  sign in with Google
+  5  Turn on reminders → Allow
+```
+
+A Safari tab and an installed PWA are separate storage contexts. Sign in inside the tab
+first and the installed app opens signed out. iOS 16.4+ required.
+
 ---
 
 ## Did it work?
 
+**Two separate proofs.** The test button calls the sender directly; the scheduled path
+goes through cron and the SQL gates. They fail for different reasons, so run both.
+
 ```
-  sign in  →  add a habit  →  "Turn on reminders"  →  "Send a test"
-                                                          │
-                          notification within seconds ────┤── yes → done
-                                                          └── no  → see below
+  A · delivery works        "Send a test"           → buzz within seconds
+  B · the clock works       habit 3 min from now    → buzz on its own
+
+     A passing tells you nothing about B: the test skips habits_due_now()
+     entirely, so the gates and timezone maths never run.
 ```
 
-Nothing arrived:
+Nothing arrived — work down this list, cheapest first:
 
 | Check | Why |
 |---|---|
 | "Failed to send a request to the Edge Function" | CORS. The function must answer the `OPTIONS` preflight and repeat the headers on the real reply. `curl` won't reproduce it — curl doesn't preflight. |
 | Google login lands on localhost | Supabase discards a `redirectTo` that isn't allowlisted and silently falls back to **Site URL**. Add the deployed origin under Authentication → URL Configuration. |
+| Nothing on screen at all | **The OS has its own switch.** System Settings → Notifications → your browser (and a separate "Habit Tracker" row, if the installed app has one) |
+| Arrives only in Notification Centre | OS alert style is **None**. Set it to Banners or Alerts. Nothing in the app can detect this |
 | Is it installed? (iPhone) | Safari tabs never receive push |
 | `select * from cron.job;` | is the minute job scheduled? |
-| `select * from cron.job_run_details order by end_time desc limit 5;` | is it firing, and did it 200? |
+| `select * from cron.job_run_details order by end_time desc limit 5;` | is it firing? **`succeeded` only means the request was queued**, not that the function answered |
+| `select status_code, content, created from net._http_response order by created desc limit 5;` | the actual reply. `{"sent":0}` at a minute something was due = a gate rejected it, usually `tz` |
 | `supabase functions logs send-reminders` | did it find anyone due? |
 | Did the project pause? | free projects sleep after ~7 idle days and send nothing |
 
@@ -154,11 +217,19 @@ Nothing arrived:
 ## Commands
 
 ```bash
-pnpm dev         # local, service worker enabled
-pnpm build       # typecheck + build
-pnpm preview     # serve the build (test install + push here)
+pnpm dev          # local, service worker enabled
+pnpm build        # typecheck + build
+pnpm preview      # serve the build locally
 pnpm typecheck
-pnpm check       # streak logic self-check
+pnpm check        # 29 asserts: streak + activity logic, no framework
+pnpm run deploy   # build + publish to Cloudflare Pages ('run' is required)
+```
+
+Server-side changes need their own deploys — `pnpm run deploy` only ships the front end:
+
+```bash
+supabase db push                            # after editing supabase/migrations/
+supabase functions deploy send-reminders    # after editing the Edge Function
 ```
 
 ## Layout

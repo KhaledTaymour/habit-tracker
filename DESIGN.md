@@ -53,17 +53,43 @@ get nothing — no error, no prompt, just silence.
 ```
 
 So "Add to Home Screen" is not a nice-to-have banner. It is **step 1 of onboarding**,
-before we even ask for notification permission. We reuse `IosInstallSheet` from
-`salat-time` for this.
+before we even ask for notification permission. `NotificationSetup` handles it: in a
+Safari tab `pushState()` returns `needs-install` and the app says so, rather than
+offering a permission button that cannot work.
 
-Order matters — asking permission first, in a tab, burns the prompt:
+*(An earlier draft of this file said we reuse `IosInstallSheet` from `salat-time`. We
+never did — the state in `NotificationSetup` replaced the need for a separate sheet.)*
+
+**Verified on an iPhone 13**, in this order — and the order is not advice, it's a
+requirement:
 
 ```
-  install  →  ask permission  →  subscribe  →  reminders work
-     │              │                │
-     └── required   └── needs a      └── sends endpoint
-         on iOS         real tap         to the server
+  1  open the deployed URL in Safari
+  2  Share → Add to Home Screen
+  3  open from the ICON, not Safari      ← the step people skip
+  4  sign in with Google
+  5  allow notifications
 ```
+
+Step 3 matters because a Safari tab and an installed PWA are **separate storage
+contexts**. Sign in inside the tab, then install, and the app opens signed out.
+
+### The second permission gate nobody documents
+
+Granting notifications in the browser is not enough. The operating system has its own
+switch, and its own idea of how to display them:
+
+```
+  site permission granted    ✓  the app asked, you tapped Allow
+  OS allows the app          ?  System Settings → Notifications
+  OS alert style             ?  None / Banners / Alerts
+                                └─ "None" still files them in Notification Centre,
+                                   so they arrive and are never seen
+```
+
+We hit both on macOS: first no delivery at all, then delivery that only appeared in
+Notification Centre. Neither produces an error the app can detect — which is why the
+UI offers "Send a test" instead of claiming reminders are on.
 
 ## 3. How a reminder actually travels
 
@@ -702,3 +728,44 @@ habit-tracker/
 | "Reminders on" can't be a lie | `pushState()` returns `ready` only with a stored endpoint |
 | Impossible UI states | union types, not booleans (§10.6) |
 | No width breakpoints | `fluid-shared/scripts/scan.mjs`, clean |
+
+## 12. What actually broke
+
+Written after getting it working on a real iPhone. Every item below cost a debugging
+round, and **not one of them was a logic error** — they were all *silence*: something
+reported success while delivering nothing.
+
+| # | Symptom | Real cause | Fix |
+|---|---|---|---|
+| 1 | UI said "Reminders on", nothing ever arrived | `pushState()` returned `ready` on permission alone, hiding the only button that saved an endpoint. `habits_due_now()` joins subscriptions, so zero devices meant `{"sent":0}` forever | `ready` requires a stored endpoint; re-checks and re-saves every load (§10.4) |
+| 2 | A reminder could vanish for a whole day | exact-minute match; one late cron run and the minute never came again | 30-minute window in seconds-since-midnight (§3) |
+| 3 | "Failed to send a request to the Edge Function" | no `OPTIONS` preflight handler. **`curl` returned 200 the whole time** — curl doesn't preflight | answer `OPTIONS`; all replies through one `json()` helper |
+| 4 | "Sent." even when delivery failed | the response was discarded | report per-device counts; "accepted", not "sent" |
+| 5 | Testing wiped the real badge | test payload carried `badge: 0`, read as "clear" | `badge: number \| null`; null means don't touch |
+| 6 | Nothing on screen, macOS | OS-level notification permission for the browser was off | System Settings, not code |
+| 7 | Arrived, but only in Notification Centre | OS alert style was "None" | System Settings → Banners or Alerts |
+| 8 | Google login redirected to `localhost` from the phone | Supabase discards a non-allowlisted `redirectTo` and silently falls back to Site URL | add the deployed origin to the allowlist |
+
+### What this pattern says
+
+```
+  every single failure looked like success from at least one vantage point
+
+  curl said 200          while the browser was blocked          (#3)
+  the UI said "on"       while nothing was subscribed           (#1)
+  the function said sent while the OS discarded it              (#4, #6, #7)
+  cron said "succeeded"  while the HTTP call inside it failed   (vault secrets)
+  Supabase said 200      while ignoring the redirect we asked for (#8)
+```
+
+Three habits came out of it, and they're worth more than the fixes:
+
+1. **Verify with the same client that will fail.** `curl` cannot reproduce a browser bug. Two deploys were spent on a green check that proved nothing.
+2. **A state may not claim more than it has checked.** "Permission granted" is not "will receive". "Accepted by FCM" is not "the user saw it". Each conflation cost a round.
+3. **The last mile is the OS, and it is silent.** Half of these were settings, not code. A "send me a test" button is not a nicety — it is the only instrument that reaches past the code.
+
+### Still unverified
+
+- **A scheduled reminder firing on its own.** The test button skips `habits_due_now()` entirely, so the four gates and the timezone maths have never run for real. This is the one gap that matters.
+- **Timezone correctness across devices.** `tz` is stamped from whichever browser last saved the habit (§4).
+- **Free-tier pause.** A Supabase project idle ~7 days stops sending, silently — the ninth entry in the table above, waiting to happen.
