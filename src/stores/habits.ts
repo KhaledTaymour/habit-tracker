@@ -29,11 +29,12 @@ export const useHabits = create<HabitState>((set, get) => ({
     set({ loading: true, error: null })
     const [habits, completions] = await Promise.all([
       supabase.from('habits').select('*').order('remind_at'),
-      // 60 days is plenty for the streaks we display and keeps the payload small.
+      // 90 days: covers the 10-week activity grid with a margin, and is still a
+      // few hundred rows at most. Widen ActivityGrid's DAYS and this together.
       supabase
         .from('habit_completions')
         .select('habit_id, done_on')
-        .gte('done_on', ymd(new Date(Date.now() - 60 * 864e5))),
+        .gte('done_on', ymd(new Date(Date.now() - 90 * 864e5))),
     ])
     const error = habits.error ?? completions.error
     if (error) {

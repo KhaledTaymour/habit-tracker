@@ -228,6 +228,38 @@ Same two screens as an editable diagram — colours, states, and the layout note
 Integration* extension in VS Code. Stored as plain uncompressed XML, so it diffs in a
 pull request like code does.
 
+## 6.1 Activity — the contribution grid
+
+Per-habit streaks live on each card. This answers the other question: *how have I
+been doing overall?*
+
+```
+        ┌ 10 weeks ────────────────────────────────┐
+    M   ▓ ▓ ░ ▓ ▓ ▓ ▓ ▓ ░ ▓                        ▓  all of it
+    W   ▓ ▒ ▓ ▓ ░ ▓ ▓ ▒ ▓ ▓                        ▒  some of it
+    F   ▓ ▓ ▓ ▒ ▓ ▓ ▓ ▓ ▓ ▓                        ▪  missed
+    S   · · · · · · · · · ·                        ·  rest day
+        └ each column is one week ─────────────────┘
+```
+
+Four states per day, not two. The distinction that matters is the last one: a
+Saturday you never scheduled must not look like a Saturday you skipped, or the grid
+guilts you for days off you designed on purpose.
+
+Shade is the **ratio** done ÷ scheduled, not a raw count — 1 of 1 is a full day and
+should read as strongly as 4 of 4.
+
+Above the grid, two numbers:
+
+- **perfect days in a row**, ending today. Rest days don't break it and don't count. Today is a grace day, same rule as a habit streak.
+- **perfect days in 10 weeks**, so a broken streak doesn't erase the fact you did well for a month.
+
+**Known limitation.** Past days are scored against each habit's *current* schedule,
+because schedule history isn't stored. Switch a habit from daily to Mondays and its
+older cells re-score. Fixing it properly means a versioned schedule table, which is
+not worth it yet — the alternative would be lying about what you actually did on days
+you can no longer verify.
+
 ## 7. Layout rules
 
 This project's UI is built with the **[fluid](https://github.com/KhaledTaymour/fluid-skills)**
@@ -292,7 +324,7 @@ keeps it awake; a week off does not.
 | Not building | Add it when |
 |---|---|
 | Habit categories / tags | you have more than ~15 habits |
-| Charts and history views | you have a month of real data |
+| ~~Charts and history views~~ | **built** — see §6.1, the activity grid |
 | Offline queue for ticks | you actually lose a tick to bad signal |
 | Multiple reminders per habit | one genuinely isn't enough |
 | Arabic | you want it — the layout is already ready |
@@ -635,7 +667,9 @@ habit-tracker/
 │   │   ├── push.ts              PushState machine (§10.4), subscribe, test push
 │   │   ├── badge.ts             setAppBadge, silent where unsupported
 │   │   ├── streak.ts            pure: isDueOn, streakOf
-│   │   └── streak.check.ts      13 asserts, `pnpm check`, no framework
+│   │   ├── streak.check.ts      13 asserts, `pnpm check`, no framework
+│   │   ├── activity.ts          pure: activityDays, perfectDayStreak (§6.1)
+│   │   └── activity.check.ts    16 asserts, same runner
 │   │
 │   ├── stores/habits.ts         zustand; CRUD + optimistic tick + badge sync
 │   ├── types/index.ts           Habit, Completion, ScheduleType
@@ -643,6 +677,7 @@ habit-tracker/
 │       ├── SignIn.tsx           one button
 │       ├── TodayScreen.tsx      the list; form state machine (§10.6)
 │       ├── HabitCard.tsx        tick, name, schedule, streak
+│       ├── ActivityGrid.tsx     10-week heatmap (§6.1)
 │       ├── HabitForm.tsx        new + edit, native time input
 │       └── NotificationSetup.tsx  makes §10.4 visible instead of silent
 │

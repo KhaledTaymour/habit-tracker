@@ -8,6 +8,7 @@ import {
   useHabits,
 } from '@/stores/habits'
 import type { Habit, HabitDraft } from '@/types'
+import { ActivityGrid } from './ActivityGrid'
 import { HabitCard } from './HabitCard'
 import { HabitForm } from './HabitForm'
 import { NotificationSetup } from './NotificationSetup'
@@ -108,6 +109,8 @@ export function TodayScreen() {
           </div>
         </section>
       )}
+
+      {habits.length > 0 && <ActivityGrid habits={habits} completions={completions} />}
 
       <button
         type="button"
