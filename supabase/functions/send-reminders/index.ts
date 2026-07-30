@@ -79,23 +79,36 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
 
   let isTest = false
+  let isDiagnose = false
   try {
     const body = await req.json()
     isTest = body?.test === true
+    isDiagnose = body?.diagnose === true
   } catch {
     // pg_cron posts '{}'; a missing body is normal.
   }
 
+  // Who is asking? Both the test and diagnose paths are caller-scoped.
+  const callerId = async (): Promise<string | null> => {
+    const token = req.headers.get('Authorization')?.replace('Bearer ', '') ?? ''
+    const { data } = await createClient(env('SUPABASE_URL'), env('SUPABASE_ANON_KEY'), {
+      global: { headers: { Authorization: `Bearer ${token}` } },
+    }).auth.getUser()
+    return data.user?.id ?? null
+  }
+
+  // --- diagnose path: why did or didn't a reminder fire? Read-only. ---
+  if (isDiagnose) {
+    const userId = await callerId()
+    if (!userId) return json({ error: 'not signed in' }, 401)
+    const { data, error: diagError } = await db.rpc('reminder_diagnostics', { p_user: userId })
+    if (diagError) return json({ error: diagError.message }, 500)
+    return json(data)
+  }
+
   // --- test path: prove delivery for the caller only ---
   if (isTest) {
-    const token = req.headers.get('Authorization')?.replace('Bearer ', '') ?? ''
-    const { data: userData } = await createClient(
-      env('SUPABASE_URL'),
-      env('SUPABASE_ANON_KEY'),
-      { global: { headers: { Authorization: `Bearer ${token}` } } },
-    ).auth.getUser()
-
-    const userId = userData.user?.id
+    const userId = await callerId()
     if (!userId) return json({ error: 'not signed in' }, 401)
 
     const { data: subs } = await db
