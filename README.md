@@ -3,6 +3,12 @@
 An app you install on your phone and your laptop. Add habits. It reminds you. Tick them
 off. It counts your streak.
 
+### ▶ [habit-tracker-2qa.pages.dev](https://habit-tracker-2qa.pages.dev)
+
+Open it on a phone and use **Share → Add to Home Screen** — reminders only work once
+it's installed. Sign-in is Google; your habits are your own (row-level security, so the
+database itself refuses to hand over anyone else's rows).
+
 Design and diagrams: **[DESIGN.md](DESIGN.md)** · Screens: **[docs/screens.drawio](docs/screens.drawio)**
 
 **Status** — verified end to end on macOS and an installed iPhone 13:
