@@ -142,6 +142,7 @@ Nothing arrived:
 | Check | Why |
 |---|---|
 | "Failed to send a request to the Edge Function" | CORS. The function must answer the `OPTIONS` preflight and repeat the headers on the real reply. `curl` won't reproduce it — curl doesn't preflight. |
+| Google login lands on localhost | Supabase discards a `redirectTo` that isn't allowlisted and silently falls back to **Site URL**. Add the deployed origin under Authentication → URL Configuration. |
 | Is it installed? (iPhone) | Safari tabs never receive push |
 | `select * from cron.job;` | is the minute job scheduled? |
 | `select * from cron.job_run_details order by end_time desc limit 5;` | is it firing, and did it 200? |
