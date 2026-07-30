@@ -24,6 +24,31 @@ export function TodayScreen() {
     void load()
   }, [load])
 
+  // Refresh when the app comes back to the foreground. Without this, a habit ticked
+  // on your phone still looks untouched on your laptop — and the badge keeps
+  // yesterday's number across midnight (§5).
+  //
+  // ponytail: a focus refresh, not a Realtime subscription. It costs two listeners
+  // and fixes the case that actually happens — you pick up the other device. Live
+  // sync while both screens are open is the rarer case; add Realtime if it bites.
+  useEffect(() => {
+    let last = 0
+    const refresh = () => {
+      if (document.visibilityState !== 'visible') return
+      // visibilitychange and focus both fire on some app switches; one load is enough.
+      const now = Date.now()
+      if (now - last < 3000) return
+      last = now
+      void load()
+    }
+    document.addEventListener('visibilitychange', refresh)
+    window.addEventListener('focus', refresh)
+    return () => {
+      document.removeEventListener('visibilitychange', refresh)
+      window.removeEventListener('focus', refresh)
+    }
+  }, [load])
+
   const today = dueToday(habits)
   const pending = pendingCount(habits, completions)
   const later = habits.filter((h) => !today.includes(h))
