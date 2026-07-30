@@ -18,8 +18,9 @@ self.addEventListener('activate', (event) => {
 interface ReminderPayload {
   title: string
   body: string
-  /** Habits still pending today, for the icon badge. */
-  badge?: number
+  /** Habits still pending today. Absent or null means "leave the badge alone" —
+   *  a test push must not wipe a real count. */
+  badge?: number | null
   url?: string
 }
 
@@ -50,8 +51,10 @@ self.addEventListener('push', (event) => {
         clearAppBadge?: () => Promise<void>
       }
       try {
-        if (payload.badge && payload.badge > 0) await badger.setAppBadge?.(payload.badge)
-        else await badger.clearAppBadge?.()
+        if (typeof payload.badge === 'number') {
+          if (payload.badge > 0) await badger.setAppBadge?.(payload.badge)
+          else await badger.clearAppBadge?.()
+        }
       } catch {
         // Badging unsupported here; the notification already landed.
       }

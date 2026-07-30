@@ -124,11 +124,31 @@ export async function enablePush(): Promise<PushState> {
   return subscribeAndSave()
 }
 
+export interface TestResult {
+  devices: number
+  sent: number
+  failed: number
+  gone: number
+}
+
 /** Proves the whole chain works end to end. Without this, 'ready' and 'silently
- *  broken' look identical to the user. */
-export async function sendTestPush(): Promise<void> {
-  const { error } = await supabase.functions.invoke('send-reminders', {
-    body: { test: true },
-  })
+ *  broken' look identical to the user.
+ *
+ *  Returns what actually happened per device. Reporting "sent" without reading the
+ *  result would make this button a third way to claim success we never checked. */
+export async function sendTestPush(): Promise<TestResult> {
+  const { data, error } = await supabase.functions.invoke<{
+    devices?: number
+    results?: Array<'sent' | 'gone' | 'failed'>
+  }>('send-reminders', { body: { test: true } })
   if (error) throw error
+
+  const results = data?.results ?? []
+  const count = (want: string) => results.filter((r) => r === want).length
+  return {
+    devices: data?.devices ?? results.length,
+    sent: count('sent'),
+    failed: count('failed'),
+    gone: count('gone'),
+  }
 }

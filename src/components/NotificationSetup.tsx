@@ -33,8 +33,19 @@ export function NotificationSetup() {
     setBusy(true)
     setMessage(null)
     try {
-      await sendTestPush()
-      setMessage('Sent. If nothing arrives within a few seconds, reminders are not working.')
+      const { devices, sent, failed, gone } = await sendTestPush()
+      if (sent > 0) {
+        setMessage(
+          `Accepted for ${sent} of ${devices} device${devices === 1 ? '' : 's'}. ` +
+            'If no notification appears, macOS is hiding it — check Notifications settings and Do Not Disturb.',
+        )
+      } else if (gone > 0) {
+        setMessage('This device is no longer reachable. Reload to register it again.')
+      } else if (failed > 0) {
+        setMessage(`The push service rejected it for ${failed} device(s). Nothing was delivered.`)
+      } else {
+        setMessage('No devices were registered, so nothing was sent.')
+      }
     } catch (error) {
       setMessage((error as Error).message)
     } finally {

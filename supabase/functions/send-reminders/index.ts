@@ -47,11 +47,18 @@ webpush.setVapidDetails(
 // user-scoped token can do. It is never exposed to the browser.
 const db = createClient(env('SUPABASE_URL'), env('SUPABASE_SERVICE_ROLE_KEY'))
 
-async function deliver(row: DueRow, title: string, body: string): Promise<'sent' | 'gone' | 'failed'> {
+// badge null means 'leave the icon badge alone' — used by the test push, which
+// must not wipe a real pending count.
+async function deliver(
+  row: DueRow,
+  title: string,
+  body: string,
+  badge: number | null,
+): Promise<'sent' | 'gone' | 'failed'> {
   try {
     await webpush.sendNotification(
       { endpoint: row.endpoint, keys: { p256dh: row.p256dh, auth: row.auth } },
-      JSON.stringify({ title, body, badge: row.pending, url: '/' }),
+      JSON.stringify({ title, body, badge, url: '/' }),
       { TTL: 60 * 30 }, // a reminder is worthless an hour late
     )
     return 'sent'
@@ -104,6 +111,7 @@ Deno.serve(async (req) => {
           { ...s, habit_id: '', user_id: userId, name: '', emoji: '', pending: 0 } as DueRow,
           'Habit Tracker',
           'Test push — reminders are working.',
+          null,
         ),
       ),
     )
@@ -119,7 +127,7 @@ Deno.serve(async (req) => {
 
   const results = await Promise.all(
     rows.map((row) =>
-      deliver(row, `${row.emoji} ${row.name}`, timeToActWord(row.pending)),
+      deliver(row, `${row.emoji} ${row.name}`, timeToActWord(row.pending), row.pending),
     ),
   )
 
